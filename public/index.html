@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Local Socket Chat</title>
+    <link rel="stylesheet" href="/styles.css?v=mobile-session-header-fab-20261011-2" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside id="sidebar" class="sidebar glass" aria-label="项目与会话">
+        <div class="sidebar-header">
+          <div class="sidebar-brand">
+            <p class="eyebrow">Local Socket</p>
+            <h1>Codex Bridge</h1>
+          </div>
+          <div class="sidebar-actions">
+            <button id="newSessionBtn" class="ghost-btn" title="新会话">+ <span>新会话</span></button>
+            <button id="toggleSidebarBtn" class="icon-btn" title="收起项目列表" aria-label="收起项目列表" aria-expanded="true">‹</button>
+          </div>
+        </div>
+
+        <div class="workspace-card">
+          <span class="dot"></span>
+          <div>
+            <div class="workspace-label">Workspace</div>
+            <div id="workspaceRoot" class="workspace-path">加载中...</div>
+          </div>
+        </div>
+
+        <div id="collapsedProjectList" class="collapsed-project-list" aria-label="项目快捷入口"></div>
+        <div id="sessionList" class="session-list"></div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar glass">
+          <div>
+            <p class="eyebrow">Session</p>
+            <h2 id="sessionTitle">选择或创建会话</h2>
+          </div>
+          <div class="topbar-actions">
+            <button id="mobileProjectsBtn" class="ghost-btn mobile-only" aria-label="打开项目列表">项目</button>
+            <div id="connectionBadge" class="badge badge-warn">连接中</div>
+            <div id="sessionBadge" class="badge">空闲</div>
+          </div>
+        </header>
+
+        <div class="chat-stage">
+          <section id="messageViewport" class="message-viewport" aria-label="聊天记录">
+            <div id="emptyState" class="empty-state glass">
+              <div class="empty-icon">⚡</div>
+              <h3>本地 Codex Socket 聊天台</h3>
+              <p>直接输入任务并发送，会为你创建一个新的 Codex 任务。也可以从左侧选择已有任务继续对话。</p>
+            </div>
+            <div id="messageList" class="message-list"></div>
+          </section>
+          <button id="backToLatestBtn" class="back-to-latest hidden">回到最新 ↓</button>
+        </div>
+
+        <footer class="composer glass">
+          <div id="banner" class="banner hidden"></div>
+          <textarea
+            id="composerInput"
+            placeholder="给 Codex 发任务，或继续追问..."
+            rows="3"
+          ></textarea>
+          <div class="composer-actions">
+            <button id="interruptBtn" class="ghost-btn">停止当前回合</button>
+            <button id="deleteBtn" class="ghost-btn danger-btn">删会话</button>
+            <button id="sendBtn" class="primary-btn">发送</button>
+          </div>
+        </footer>
+      </main>
+
+      <button id="mobileOutlineBtn" class="ghost-btn mobile-only mobile-history-fab" aria-label="打开对话目录" title="打开右侧对话目录">目录</button>
+      <button id="drawerBackdrop" class="drawer-backdrop hidden" aria-label="关闭侧栏"></button>
+
+      <aside id="historyOutline" class="history-outline glass" aria-label="对话目录">
+        <header class="outline-header">
+          <div class="outline-heading">
+            <p class="eyebrow">History</p>
+            <h2>对话目录</h2>
+          </div>
+          <button id="toggleOutlineBtn" class="icon-btn" title="收起对话目录" aria-label="收起对话目录" aria-expanded="true">›</button>
+        </header>
+        <nav id="historyAnchorList" class="history-anchor-list" aria-label="用户消息锚点"></nav>
+      </aside>
+    </div>
+
+    <script type="module" src="/app.js?v=mobile-history-fix-20261011-1"></script>
+  </body>
+</html>

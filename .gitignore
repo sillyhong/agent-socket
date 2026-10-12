@@ -1,0 +1,10 @@
+
+# Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
+
+node_modules
+.codex-app-schema
+.DS_Store
+dist
+coverage
+
