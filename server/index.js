@@ -4,6 +4,7 @@ import path from "node:path";
 import http from "node:http";
 import { WebSocketServer } from "ws";
 import { config, publicDir, workspaceRoot } from "./config.js";
+import { normalizeAppPath, isSupportedWebSocketPath } from "./path-utils.js";
 import { CodexRpcClient } from "./codex-rpc-client.js";
 import {
   createTitleFromText,
@@ -38,8 +39,15 @@ boot().catch((error) => {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const requestPath = normalizeAppPath(url.pathname);
 
-  if (url.pathname === "/api/health") {
+  if (requestPath.redirectTo) {
+    res.writeHead(308, { Location: `${requestPath.redirectTo}${url.search}` });
+    res.end();
+    return;
+  }
+
+  if (requestPath.pathname === "/api/health") {
     const payload = {
       ok: !bootstrapError,
       ready: codex.ready,
@@ -50,11 +58,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  serveStatic(url.pathname, res);
+  serveStatic(requestPath.pathname, res);
 });
 
 server.on("upgrade", (req, socket, head) => {
-  if (req.url !== "/ws") {
+  const pathname = new URL(req.url, "http://localhost").pathname;
+  if (!isSupportedWebSocketPath(pathname)) {
     socket.destroy();
     return;
   }

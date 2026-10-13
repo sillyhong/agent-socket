@@ -97,7 +97,9 @@ connect();
 
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${protocol}://${location.host}/ws`);
+  const pagePath = location.pathname.replace(/\/+$/, "");
+  const basePath = pagePath === "/agent-socket" ? pagePath : "";
+  state.ws = new WebSocket(`${protocol}://${location.host}${basePath}/ws`);
 
   state.ws.addEventListener("open", () => {
     state.connected = true;

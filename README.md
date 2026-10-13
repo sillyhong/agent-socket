@@ -30,6 +30,14 @@ Open:
 http://localhost:8787
 ```
 
+The service also supports the `/agent-socket/` mount path for reverse proxies. With the current Nginx regex location, keep `proxy_pass http://127.0.0.1:8787;` without a trailing URI slash so the prefix is forwarded to this app. Both `/` and `/agent-socket/` remain available.
+
+Run path handling tests with:
+
+```bash
+npm test
+```
+
 ## Key env vars
 
 ```bash
