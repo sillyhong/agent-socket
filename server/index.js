@@ -63,6 +63,21 @@ const server = http.createServer(async (req, res) => {
 
 server.on("upgrade", (req, socket, head) => {
   const pathname = new URL(req.url, "http://localhost").pathname;
+  const normalizedPath = normalizeAppPath(pathname).pathname;
+
+  if (normalizedPath === "/bridge") {
+    if (!config.reverseBridgeEnabled || !isAuthorizedBridgeRequest(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      codex.attachReverseSocket(ws);
+    });
+    return;
+  }
+
   if (!isSupportedWebSocketPath(pathname)) {
     socket.destroy();
     return;
@@ -72,6 +87,15 @@ server.on("upgrade", (req, socket, head) => {
     wss.emit("connection", ws, req);
   });
 });
+
+function isAuthorizedBridgeRequest(req) {
+  const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "");
+  if (!match) return false;
+
+  const supplied = Buffer.from(match[1].trim());
+  const expected = Buffer.from(config.bridgeToken);
+  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
 
 wss.on("connection", async (ws) => {
   clients.add(ws);

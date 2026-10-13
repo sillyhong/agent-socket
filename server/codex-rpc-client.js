@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import WebSocket from "ws";
 
 export class CodexRpcClient extends EventEmitter {
   constructor(options) {
@@ -12,6 +13,7 @@ export class CodexRpcClient extends EventEmitter {
     this.ready = false;
     this.startPromise = null;
     this.ownsAppServer = false;
+    this.reverseSocket = null;
   }
 
   async start() {
@@ -19,10 +21,15 @@ export class CodexRpcClient extends EventEmitter {
     if (this.startPromise) return this.startPromise;
 
     this.startPromise = (async () => {
-      const alreadyReady = await this.#isReady();
-      if (!alreadyReady) {
-        await this.#spawnAppServer();
-        await this.#waitForReady();
+      if (!this.options.reverseBridgeEnabled) {
+        const alreadyReady = await this.#isReady();
+        if (!alreadyReady) {
+          if (this.options.usesExternalAppServer) {
+            throw new Error(`Configured Codex app-server is not ready at ${this.options.appServerReadyUrl}`);
+          }
+          await this.#spawnAppServer();
+          await this.#waitForReady();
+        }
       }
 
       await this.#connectSocket();
@@ -110,6 +117,22 @@ export class CodexRpcClient extends EventEmitter {
     this.ready = false;
   }
 
+  attachReverseSocket(socket) {
+    if (!this.options.reverseBridgeEnabled) {
+      socket.close(1008, "Reverse bridge mode is disabled");
+      return;
+    }
+
+    if (this.reverseSocket && this.reverseSocket !== socket) {
+      this.reverseSocket.close(1012, "Replaced by a newer Mac bridge connection");
+    }
+
+    this.reverseSocket = socket;
+    this.socket = socket;
+    this.#bindSocket(socket);
+    this.emit("reverseSocket", socket);
+  }
+
   #handleMessage(payload) {
     if (payload.id !== undefined && (payload.result !== undefined || payload.error !== undefined)) {
       const pending = this.pending.get(payload.id);
@@ -151,6 +174,9 @@ export class CodexRpcClient extends EventEmitter {
   }
 
   async #spawnAppServer() {
+    if (this.options.reverseBridgeEnabled) {
+      throw new Error("Cannot spawn a local app-server in reverse bridge mode");
+    }
     if (this.proc) return;
 
     this.proc = spawn(
@@ -193,29 +219,57 @@ export class CodexRpcClient extends EventEmitter {
   async #connectSocket() {
     if (this.socket?.readyState === WebSocket.OPEN) return;
 
-    this.socket = await new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.options.appServerUrl);
+    if (this.options.reverseBridgeEnabled) {
+      const socket = this.reverseSocket?.readyState === WebSocket.OPEN
+        ? this.reverseSocket
+        : await new Promise((resolve) => this.once("reverseSocket", resolve));
+      this.socket = socket;
+      return;
+    }
 
-      socket.addEventListener("open", () => resolve(socket), { once: true });
-      socket.addEventListener(
-        "error",
-        (event) => reject(new Error(event.message || "Failed to connect to Codex app-server")),
-        { once: true }
-      );
+    const endpoint = new URL(this.options.appServerUrl);
+    const hostname = endpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    const isLoopback = hostname === "localhost"
+      || hostname === "::1"
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    if (this.options.appServerToken && endpoint.protocol === "ws:" && !isLoopback) {
+      throw new Error("Refusing to send CODEX_APP_SERVER_TOKEN over public ws://; use wss:// or a secure tunnel");
+    }
+
+    this.socket = await new Promise((resolve, reject) => {
+      const headers = this.options.appServerToken
+        ? { Authorization: `Bearer ${this.options.appServerToken}` }
+        : undefined;
+      const socket = new WebSocket(this.options.appServerUrl, { headers });
+
+      socket.once("open", () => resolve(socket));
+      socket.once("unexpected-response", (_request, response) => {
+        response.resume();
+        reject(new Error(`Codex app-server rejected WebSocket upgrade (HTTP ${response.statusCode})`));
+      });
+      socket.once("error", (error) => reject(error));
     });
 
-    this.socket.addEventListener("message", (event) => {
+    this.#bindSocket(this.socket);
+  }
+
+  #bindSocket(socket) {
+    socket.on("message", (data) => {
       try {
-        const payload = JSON.parse(String(event.data));
+        const payload = JSON.parse(String(data));
         this.#handleMessage(payload);
       } catch (error) {
         this.emit("protocolError", error);
       }
     });
 
-    this.socket.addEventListener("close", () => {
+    socket.on("close", () => {
       this.ready = false;
-      this.socket = null;
+      if (this.socket === socket) this.socket = null;
+      if (this.reverseSocket === socket) this.reverseSocket = null;
+      const error = new Error("Codex app-server WebSocket closed");
+      for (const { reject } of this.pending.values()) reject(error);
+      this.pending.clear();
       this.emit("socketClosed");
     });
   }
