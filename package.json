@@ -8,6 +8,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "bridge:mac": "node server/reverse-agent.js",
+    "bridge:mac:all": "node server/start-mac-bridge.js",
     "test": "node --test"
   },
   "dependencies": {

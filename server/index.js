@@ -51,6 +51,7 @@ const server = http.createServer(async (req, res) => {
     const payload = {
       ok: !bootstrapError,
       ready: codex.ready,
+      appServerVersion: codex.serverVersion,
       error: bootstrapError?.message || null
     };
     res.writeHead(payload.ok ? 200 : 500, { "Content-Type": "application/json; charset=utf-8" });
@@ -126,6 +127,24 @@ async function boot() {
 }
 
 function wireCodexNotifications() {
+  codex.on("socketClosed", (error) => {
+    resumedThreads.clear();
+    availableModelsPromise = null;
+    streamState.clear();
+    bootstrapError = null;
+    for (const runtime of threadRuntime.values()) {
+      runtime.activeTurnId = null;
+      runtime.status = "notLoaded";
+    }
+    console.warn(error.message);
+    broadcast("connection.status", { ready: false });
+  });
+
+  codex.on("ready", () => {
+    bootstrapError = null;
+    broadcast("connection.status", { ready: true });
+  });
+
   codex.on("stderr", (text) => {
     broadcast("status", { level: "stderr", message: text.trim() });
   });

@@ -143,6 +143,19 @@ function onServerMessage(message) {
     return;
   }
 
+  if (type === "connection.status") {
+    state.ready = payload.ready;
+    renderConnection();
+    if (payload.ready) {
+      hideBanner();
+      send({ type: "session.list" });
+      if (state.currentSessionId) send({ type: "session.open", sessionId: state.currentSessionId });
+    } else {
+      showBanner("Mac 执行通道已断开，等待重连...");
+    }
+    return;
+  }
+
   if (type === "session.snapshot") {
     state.messages.set(payload.id, payload.messages || []);
     state.activeStatus.set(payload.id, payload.status || "idle");

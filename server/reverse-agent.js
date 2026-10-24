@@ -3,13 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import WebSocket from "ws";
+import { resolveCodexCommand, checkLocalAppServerVersion } from "./codex-runtime.js";
+import { acquireBridgeLock } from "./bridge-lock.js";
 
 const bridgeUrl = process.env.CODEX_BRIDGE_URL;
 const bridgeToken = process.env.CODEX_BRIDGE_TOKEN;
 const appServerPort = Number(process.env.CODEX_APP_SERVER_PORT || 8899);
 const localAppServerUrl = process.env.CODEX_LOCAL_APP_SERVER_URL || `ws://127.0.0.1:${appServerPort}`;
 const localAppServerToken = resolveLocalAppServerToken();
-const codexCommand = process.env.CODEX_COMMAND || "codex";
+const codexCommand = resolveCodexCommand();
 const cwd = process.env.CODEX_CWD || process.cwd();
 
 if (!bridgeUrl || !bridgeToken) {
@@ -20,6 +22,16 @@ const bridgeEndpoint = new URL(bridgeUrl);
 if (!["ws:", "wss:"].includes(bridgeEndpoint.protocol)) {
   throw new Error("CODEX_BRIDGE_URL must use ws:// or wss://");
 }
+
+let bridgeLock;
+try {
+  bridgeLock = acquireBridgeLock(bridgeUrl, { ownerPid: process.env.CODEX_BRIDGE_LOCK_OWNER_PID });
+} catch (error) {
+  if (error.code !== "BRIDGE_ALREADY_RUNNING") throw error;
+  console.log(error.message);
+  process.exit(0);
+}
+process.once("exit", () => bridgeLock.release());
 
 const localEndpoint = new URL(localAppServerUrl);
 const localHost = localEndpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -37,12 +49,31 @@ let stopping = false;
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
-await ensureLocalAppServer();
-console.log(`Local Codex app-server ready at ${localAppServerUrl}`);
+try {
+  await ensureLocalAppServer();
+  const appServerVersion = await checkLocalAppServerVersion({
+    command: codexCommand,
+    url: localAppServerUrl,
+    token: localAppServerToken
+  });
+  console.log(`Local Codex app-server ready at ${localAppServerUrl}`);
+  console.log(`Local Codex app-server version: ${appServerVersion}`);
+} catch (error) {
+  stop();
+  throw error;
+}
 
 while (!stopping) {
   try {
-    await connectBridgeOnce();
+    await ensureLocalAppServer();
+    const closed = await connectBridgeOnce();
+    if (!stopping) {
+      console.error(`Reverse bridge disconnected: source=${closed.source} code=${closed.code} reason=${closed.reason || "none"}`);
+      if (closed.source === "cloud" && closed.code === 1012) {
+        console.error("此 bridge 已被另一条连接替换，停止重连，避免互相挤掉。");
+        stop();
+      }
+    }
   } catch (error) {
     if (!stopping) console.error(`Reverse bridge disconnected: ${error.message}`);
   }
@@ -107,7 +138,7 @@ function connectBridgeOnce() {
 
   return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (error) => {
+    const finish = (error, result) => {
       if (settled) return;
       settled = true;
       local.close();
@@ -115,14 +146,17 @@ function connectBridgeOnce() {
       if (activeLocalSocket === local) activeLocalSocket = null;
       if (activeBridgeSocket === bridge) activeBridgeSocket = null;
       if (error) reject(error);
-      else resolve();
+      else resolve(result);
     };
+
+    local.once("close", (code, reason) => finish(null, { source: "local", code, reason: reason.toString() }));
 
     local.once("open", () => {
       bridge = new WebSocket(bridgeUrl, {
         headers: { Authorization: `Bearer ${bridgeToken}` }
       });
       activeBridgeSocket = bridge;
+      bridge.once("close", (code, reason) => finish(null, { source: "cloud", code, reason: reason.toString() }));
 
       bridge.once("open", () => {
         console.log(`Reverse tunnel established to ${bridgeEndpoint.host}`);
@@ -132,10 +166,6 @@ function connectBridgeOnce() {
         bridge.on("message", (data, isBinary) => {
           if (local.readyState === WebSocket.OPEN) local.send(data, { binary: isBinary });
         });
-        local.once("close", () => finish());
-        bridge.once("close", () => finish());
-        local.once("error", finish);
-        bridge.once("error", finish);
       });
 
       bridge.once("error", finish);

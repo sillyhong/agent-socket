@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import WebSocket from "ws";
+import { assertCompatibleCodexVersion, getCodexVersion, parseCodexVersion } from "./codex-runtime.js";
 
 export class CodexRpcClient extends EventEmitter {
   constructor(options) {
@@ -14,13 +15,14 @@ export class CodexRpcClient extends EventEmitter {
     this.startPromise = null;
     this.ownsAppServer = false;
     this.reverseSocket = null;
+    this.serverVersion = null;
   }
 
   async start() {
     if (this.ready && this.socket?.readyState === WebSocket.OPEN) return;
     if (this.startPromise) return this.startPromise;
 
-    this.startPromise = (async () => {
+    const startPromise = (async () => {
       if (!this.options.reverseBridgeEnabled) {
         const alreadyReady = await this.#isReady();
         if (!alreadyReady) {
@@ -33,21 +35,37 @@ export class CodexRpcClient extends EventEmitter {
       }
 
       await this.#connectSocket();
-      await this.#requestRaw("initialize", {
-        clientInfo: this.options.clientInfo,
-        capabilities: {
-          experimentalApi: true,
-          requestAttestation: false
+      const socket = this.socket;
+      try {
+        const serverInfo = await this.#requestRaw("initialize", {
+          clientInfo: this.options.clientInfo,
+          capabilities: {
+            experimentalApi: true,
+            requestAttestation: false
+          }
+        }, socket);
+        if (this.socket !== socket) throw new Error("Codex bridge connection was replaced during initialization");
+        if (!this.options.reverseBridgeEnabled && !this.options.usesExternalAppServer && this.options.codexCommand) {
+          assertCompatibleCodexVersion(getCodexVersion(this.options.codexCommand), serverInfo);
         }
-      });
-
-      this.ready = true;
+        this.serverVersion = parseCodexVersion(serverInfo.userAgent);
+        this.#write({ method: "initialized", params: {} }, socket);
+        this.ready = true;
+        this.emit("ready", { version: this.serverVersion });
+      } catch (error) {
+        if (this.socket === socket) {
+          this.#disconnectSocket(socket, error);
+          socket.close();
+        }
+        throw error;
+      }
     })();
+    this.startPromise = startPromise;
 
     try {
-      await this.startPromise;
+      await startPromise;
     } finally {
-      this.startPromise = null;
+      if (this.startPromise === startPromise) this.startPromise = null;
     }
   }
 
@@ -56,13 +74,18 @@ export class CodexRpcClient extends EventEmitter {
     return this.#requestRaw(method, params);
   }
 
-  async #requestRaw(method, params) {
+  async #requestRaw(method, params, socket = this.socket) {
     const id = this.nextId++;
     const message = { jsonrpc: "2.0", id, method, params };
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.#write(message);
+      this.pending.set(id, { resolve, reject, socket });
+      try {
+        this.#write(message, socket);
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -108,11 +131,11 @@ export class CodexRpcClient extends EventEmitter {
 
   stop() {
     if (this.socket) {
-      this.socket.close();
-      this.socket = null;
+      const socket = this.socket;
+      this.#disconnectSocket(socket, new Error("Codex client stopped"));
+      socket.close();
     }
-    if (!this.proc) return;
-    if (this.ownsAppServer) this.proc.kill();
+    if (this.proc && this.ownsAppServer) this.proc.kill();
     this.proc = null;
     this.ready = false;
   }
@@ -123,14 +146,20 @@ export class CodexRpcClient extends EventEmitter {
       return;
     }
 
-    if (this.reverseSocket && this.reverseSocket !== socket) {
-      this.reverseSocket.close(1012, "Replaced by a newer Mac bridge connection");
+    if (this.socket === socket) return;
+    const previous = this.socket;
+    if (previous) {
+      this.#disconnectSocket(previous, new Error("Codex bridge connection was replaced"));
     }
 
+    this.ready = false;
+    this.serverVersion = null;
     this.reverseSocket = socket;
     this.socket = socket;
     this.#bindSocket(socket);
+    previous?.close(1012, "Replaced by a newer Mac bridge connection");
     this.emit("reverseSocket", socket);
+    this.start().catch((error) => this.emit("protocolError", error));
   }
 
   #handleMessage(payload) {
@@ -166,11 +195,11 @@ export class CodexRpcClient extends EventEmitter {
     }
   }
 
-  #write(message) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+  #write(message, socket = this.socket) {
+    if (!socket || socket !== this.socket || socket.readyState !== WebSocket.OPEN) {
       throw new Error("Codex app-server WebSocket not connected");
     }
-    this.socket.send(JSON.stringify(message));
+    socket.send(JSON.stringify(message));
   }
 
   async #spawnAppServer() {
@@ -255,6 +284,7 @@ export class CodexRpcClient extends EventEmitter {
 
   #bindSocket(socket) {
     socket.on("message", (data) => {
+      if (this.socket !== socket) return;
       try {
         const payload = JSON.parse(String(data));
         this.#handleMessage(payload);
@@ -263,15 +293,31 @@ export class CodexRpcClient extends EventEmitter {
       }
     });
 
-    socket.on("close", () => {
-      this.ready = false;
-      if (this.socket === socket) this.socket = null;
-      if (this.reverseSocket === socket) this.reverseSocket = null;
-      const error = new Error("Codex app-server WebSocket closed");
-      for (const { reject } of this.pending.values()) reject(error);
-      this.pending.clear();
-      this.emit("socketClosed");
+    socket.on("close", (code, reason) => {
+      const detail = reason.toString();
+      this.#disconnectSocket(socket, new Error(
+        `Codex app-server WebSocket closed (code=${code}${detail ? `, reason=${detail}` : ""})`
+      ));
     });
+    socket.on("error", (error) => {
+      this.#disconnectSocket(socket, error);
+      socket.terminate();
+    });
+  }
+
+  #disconnectSocket(socket, error) {
+    if (this.socket !== socket) return;
+    this.ready = false;
+    this.serverVersion = null;
+    this.socket = null;
+    if (this.reverseSocket === socket) this.reverseSocket = null;
+    this.startPromise = null;
+    for (const [id, pending] of this.pending) {
+      if (pending.socket !== socket) continue;
+      this.pending.delete(id);
+      pending.reject(error);
+    }
+    this.emit("socketClosed", error);
   }
 
   async #isReady() {

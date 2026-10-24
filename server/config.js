@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import { resolveCodexCommand } from "./codex-runtime.js";
 
 export const workspaceRoot = process.cwd();
 export const publicDir = path.join(workspaceRoot, "public");
@@ -22,22 +23,6 @@ function resolveAppServerToken() {
   if (!tokenFile || !fs.existsSync(tokenFile)) return "";
 
   return fs.readFileSync(tokenFile, "utf8").trim();
-}
-
-function resolveCodexCommand() {
-  const candidates = [
-    process.env.CODEX_COMMAND,
-    path.join(os.homedir(), ".local/bin/codex"),
-    "/Applications/ChatGPT.app/Contents/Resources/codex",
-    "codex"
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (candidate === "codex") return candidate;
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  return "codex";
 }
 
 export const config = {
